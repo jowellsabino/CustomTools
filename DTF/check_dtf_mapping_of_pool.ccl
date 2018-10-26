@@ -1,0 +1,25 @@
+select pg.prsnl_group_id
+     , pg.prsnl_group_name
+     , DTF_POOL=dtfpl.pool_name
+     , DTF_PRESCRIBER=pr.name_full_formatted
+     , DTF_LOCATION=cvloc.display
+     , DTft_SERVICE=dtfsrv.service_name
+     , pg.*
+from prsnl_group pg
+, (left join v500_cust.chb_dtf_pool dtfpl
+          on dtfpl.prsnl_group_id = pg.prsnl_group_id )
+, (left join v500_cust.chb_dtf_prescriber dtfpr
+          on dtfpl.prsnl_group_id = pg.prsnl_group_id )
+, (left join prsnl pr
+           on pr.person_id = dtfpr.prsnl_id)
+, (left join v500_cust.chb_dtf_location dtfloc
+          on dtfloc.prsnl_group_id = pg.prsnl_group_id )
+, (left join code_value cvloc
+          on cvloc.code_value = dtfloc.location_cd
+         and cvloc.code_set = 220)
+, (left join v500_cust.chb_dtf_service dtfsrv
+          on dtfloc.prsnl_group_id = pg.prsnl_group_id )
+, (left join code_value cvsrv
+          on cvsrv.code_value = dtfsrv.service_resource_cd)        
+where pg.prsnl_group_name_key = 'NEUROLOGYNURSINGWALTHAM' ;; Put pool name here -- all caps, remove spaces
+go

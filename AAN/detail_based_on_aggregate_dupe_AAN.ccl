@@ -1,0 +1,192 @@
+;;  USE of Aggregate function count(*)
+;;  Query tasks assigned by 'SYSTEM, AAN'  to the same individual, but more than once.
+ 
+;; task_activity = SENDER
+;; task_activity_assignment = RECEIVER
+ 
+select PT=p.name_full_formatted
+     , SENDER = psender.name_full_formatted
+     , RECEIVER=preceiver.name_full_formatted
+     , taa.assign_prsnl_id
+     , taa.task_id
+     , ta.encntr_id
+     , CSN=ea.alias 
+     , COUNT=count(*)
+from task_activity_assignment taa
+, (inner join task_activity ta
+           on ta.task_id = taa.task_id 
+           and ta.task_create_dt_tm > sysdate - 10)
+, (inner join person p
+           on p.person_id = ta.person_id)
+, (inner join person psender
+           on psender.person_id = ta.msg_sender_id
+          and psender.name_last_key = 'SYSTEM'
+          and psender.name_first_key = 'AAN' ) 
+, (inner join person preceiver
+           on preceiver.person_id = taa.assign_prsnl_id ) 
+, (left join encntr_alias ea
+           on ea.encntr_id = ta.encntr_id
+          and ea.alias_pool_cd = 3110552.00
+          and ea.active_ind = 1
+          and ea.end_effective_dt_tm > sysdate)
+where taa.assign_prsnl_id > 0
+group by p.name_full_formatted
+       , psender.name_full_formatted
+       , preceiver.name_full_formatted
+       , taa.assign_prsnl_id
+       , taa.task_id
+       , ta.encntr_id
+       , ea.alias
+having count(*) > 1
+with maxrec=100,maxtime=100
+go
+
+
+
+;; Bare minimum, we want ta.task_id's and taa.assign_prsnl_id's to do a count of dupe
+;; assignments of the same task to the same user. 
+select ta.task_id
+     , taa.assign_prsnl_id     
+     , COUNT=count(*)          
+from task_activity_assignment taa
+, (inner join task_activity ta
+           on ta.task_id = taa.task_id 
+           and ta.task_create_dt_tm > sysdate - 10)
+, (inner join person psender
+           on psender.person_id = ta.msg_sender_id
+          and psender.name_last_key = 'SYSTEM'
+          and psender.name_first_key = 'AAN' ) 
+where taa.assign_prsnl_id > 0
+group by ta.task_id
+       , taa.assign_prsnl_id
+having count(*) > 1          
+with maxrec=100,maxtime=100
+go  
+
+;; Once this is working, you actually do not need all the select variables
+;; This query will give the same task_id's as the previous query, albeit
+;; you will not get the assign_prsnl_id and the aggregate itself
+select ta.task_id
+ ;;    , taa.assign_prsnl_id     ;; It is ok to have LESS select variables 
+ ;;    , COUNT=count(*)          ;; than "group by" variables.
+                                 ;; You can even skip the aggregate
+from task_activity_assignment taa
+, (inner join task_activity ta
+           on ta.task_id = taa.task_id 
+           and ta.task_create_dt_tm > sysdate - 10)
+, (inner join person psender
+           on psender.person_id = ta.msg_sender_id
+          and psender.name_last_key = 'SYSTEM'
+          and psender.name_first_key = 'AAN' ) 
+where taa.assign_prsnl_id > 0
+group by ta.task_id
+       , taa.assign_prsnl_id
+having count(*) > 1          
+with maxrec=100,maxtime=100
+go                  
+ 
+;; The above query is useful to qualify task_id's that satisfy the dupe AAN requirement.
+ 
+;; A correlated query takes the above query as a condition to be satisfied by a row in the result. 
+;; A simple example is below.  
+;; 
+;; Note that once you have results from task_activity, easy to join with other tables
+;; to get the features you want, right?
+
+;; This is the OUTER query
+select pta.* 
+from task_activity pta
+                     ;; This is the INNER query, "correlated" with the OUTER query by task_id
+where pta.task_id = (select ta.task_id
+                       from task_activity_assignment taa
+                         , (inner join task_activity ta
+                                    on ta.task_id = taa.task_id 
+                                   and ta.task_create_dt_tm > sysdate - 10)
+                         , (inner join person psender
+                                    on psender.person_id = ta.msg_sender_id
+                                   and psender.name_last_key = 'SYSTEM'
+                                   and psender.name_first_key = 'AAN' ) 
+                                 where taa.assign_prsnl_id > 0
+                                   and taa.task_id = pta.task_id ;; correlation is necessary because we 
+                                                                 ;; need to check the task_id of the OUTER
+                                                                 ;; query to see if it satisfies the dupe 
+                                                                 ;; AAN condition in the INNER query
+                                                                  
+                              group by ta.task_id
+                                     , taa.assign_prsnl_id
+                                having count(*) > 1)
+with maxrec=100,maxtime=100
+go         
+
+;; ABOVE QUERY IS HORRIBLE!  What the query does is for every row in pta (task_activity),
+;; query the table for the same task_id if there is a duplicate
+;; assignment to a user.  So you check EVERY ROW in task_activity
+;; if it satisfies the AAN dupe notification requirement
+;;
+;; DVD gave up after 100 seconds, as expected, since task_activity is a HUGE table!!! 
+
+;; We need to make the "OUTER" query yield a smaller result.  I moved the 
+;; dupe AAN qualifiers to the OUTER query, and just check for counts in the INNER  
+;; (correlated) query, so we do not have to go through all rows in task_activity
+;;
+;; Note the I renamed aliases to not conflict with nested subquery
+;;
+;; OUTER query is smaller
+select pta.* 
+from task_activity pta
+;; limit only to those sent by SYSTEM, AAN, so INNER query will only check
+;; task_id's whose messages were sent by AAN
+, (inner join person ps ;; need to rename alias
+           on ps.person_id = pta.msg_sender_id
+          and ps.name_last_key = 'SYSTEM'
+          and ps.name_first_key = 'AAN' ) 
+;; limit last 10 days in OUTER query, so INNER query will only check task_id's
+;; created within the last 10 days
+where pta.task_create_dt_tm > sysdate - 10
+;; Give above conditions, count the assigned task to the same user for the task_id
+;; No need to repeat conditions, since we already qualifued task_id's we are passing
+;; below
+;; INNER query is smaller anyways since we only look at a particular task_id
+  and pta.task_id = (select ta.task_id
+                       from task_activity_assignment taa
+                         , (inner join task_activity ta
+                                    on ta.task_id = taa.task_id )
+                                 where taa.assign_prsnl_id > 0
+                                   and taa.task_id = pta.task_id ;; still "correlated"
+                              group by ta.task_id
+                                     , taa.assign_prsnl_id
+                                having count(*) > 1)
+with maxrec=100,maxtime=100
+go         
+
+;; There is a way is to just avoid correlated query altogether:
+select pta.* 
+from task_activity pta
+where pta.task_id in (select ta.task_id  ;; "in" makes this query equivalent above.
+                       from task_activity_assignment taa
+                         , (inner join task_activity ta
+                                    on ta.task_id = taa.task_id 
+                                   and ta.task_create_dt_tm > sysdate - 10)
+                         , (inner join person psender
+                                    on psender.person_id = ta.msg_sender_id
+                                   and psender.name_last_key = 'SYSTEM'
+                                   and psender.name_first_key = 'AAN' ) 
+                                 where taa.assign_prsnl_id > 0 ;; nothing correlated here. We only need a list of task_id's
+                              group by ta.task_id
+                                     , taa.assign_prsnl_id
+                                having count(*) > 1)
+with maxrec=100,maxtime=100       
+go
+;; Correlated queries are best used when the "outer query" yields a small set of results
+;; to begin with.  Worry about the OUTER query first, before worrying about the correlated query.
+;; 
+;; In other words, when you do a correlated query, you basically do
+;;
+;;   O x I
+;;
+;;  where O = number of rows in the OUTER query and I = number of rows in the INNER query.
+;;  Need to make sure that the prouct O x I is small, otherwise your query will run forevah.
+;; 
+
+
+

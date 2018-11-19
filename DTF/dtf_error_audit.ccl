@@ -1,0 +1,56 @@
+/* Audit query to get the notification that produced the DTF error */
+select
+       dtf.chb_dtf_notify_id
+     , Patient_Name=p.name_full_formatted
+     , CSN=ea.alias
+     , MRN=pa.alias
+     , dtferr.exception_dt_tm
+     , dtferr.error_message
+     , dtf.*
+from v500_cust.chb_dtf_notify dtf
+  , (inner join v500_cust.forward_event_exception_log dtferr
+             on dtferr.param_signer_id = dtf.chb_dtf_notify_id
+           and dtferr.error_code != 200)
+  , (inner join person p
+             on p.person_id = dtf.person_id)
+  , (inner join person_alias pa
+             on pa.person_id = dtf.person_id
+            and pa.active_ind = 1
+            and pa.end_effective_dt_tm > sysdate)
+  , (inner join code_value person_alias
+             on person_alias.code_value = pa.alias_pool_cd
+            and person_alias.display = 'CHB_MRN' ;; 3110551
+            and person_alias.active_ind = 1)
+  ;; change this to left join for systemtestonly patients w/o a proper encounter alias
+  , (left join encntr_alias ea
+             on ea.encntr_id = dtf.encntr_id
+            and ea.active_ind = 1
+            and ea.end_effective_dt_tm > sysdate)
+  , (left join code_value encntr_alias
+             on encntr_alias.code_value = ea.encntr_alias_type_cd
+            and encntr_alias.cdf_meaning = 'FIN NBR' ;; 1077
+            and encntr_alias.code_set = 319
+            and encntr_alias.active_ind = 1)
+where dtf.notify_status_cd in (select code_value
+                                 from code_value
+                                where cdf_meaning in ('ORDERED','PENDING') ;; 1407,1408
+                                  and code_set = 1305)
+  and dtf.active_ind = 1                                 
+  and dtf.create_dt_tm > sysdate - 10 ;; make this greater than parameter used in chb_dtf_send_notifications opsjob
+order by dtf.person_id,dtf.encntr_id,dtf.create_dt_tm,dtferr.exception_dt_tm ;;
+with maxrec=1000,maxtime=100,format(date,";;q")
+
+/* To fix, need to do this update.  Put person_id of person doing the update
+
+update  into v500_cust.chb_dtf_notify
+set notify_status_cd = 1400,  ;; "Cancelled", since no notification was actually sent as a result of the error
+updt_id = <your person_id here>,
+updt_dt_tm = cnvtdatetime(curdate,curtime3)
+where chb_dtf_notify_id in (select dtf.chb_dtf_notify_id 
+                             from v500_cust.chb_dtf_notify dtf
+                            where dtf.notify_status_cd in (1407,1408) ;; one sub-select is enough....
+                             and dtf.create_dt_tm > sysdate - 10
+                             and dtf.active_ind = 1)
+
+
+*/
